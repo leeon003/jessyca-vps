@@ -1,0 +1,22 @@
+[Unit]
+Description=WhatsApp de JESSYCA
+After=network-online.target jessyca-local.service
+Wants=network-online.target jessyca-local.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+User=jessyca
+Group=jessyca
+WorkingDirectory=/opt/jessyca/whatsapp
+EnvironmentFile=/etc/jessyca/jessyca.env
+Environment=HOME=/var/lib/jessyca
+ExecStart=/opt/jessyca/runtime/node-v24.21.0-linux-x64/bin/node /opt/jessyca/whatsapp/index.js
+Restart=on-failure
+RestartSec=10
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

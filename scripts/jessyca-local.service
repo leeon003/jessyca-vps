@@ -1,0 +1,20 @@
+[Unit]
+Description=API local de JESSYCA
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+
+[Service]
+User=jessyca
+Group=jessyca
+WorkingDirectory=/opt/jessyca/backend
+EnvironmentFile=/etc/jessyca/jessyca.env
+Environment=HOME=/var/lib/jessyca
+ExecStart=/opt/jessyca/backend/.venv-local/bin/python -m uvicorn app.local_api:app --host 127.0.0.1 --port 8001
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

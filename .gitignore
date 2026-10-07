@@ -1,0 +1,32 @@
+# Credenciales y sesiones
+.env
+.env.*
+!.env.example
+*session*
+*auth_info*
+creds.json
+.jessyca-whatsapp-session/
+.jessyca-presence.json
+
+# Dependencias generadas
+node_modules/
+.venv/
+.venv-local/
+__pycache__/
+*.pyc
+
+# Datos privados y archivos temporales
+data/
+logs/
+backups/
+*.log
+*.bak
+*.db
+*.sqlite*
+*.zip
+*.tar.gz
+config.env
+*.pem
+*.key
+id_ed25519*
+id_rsa*
