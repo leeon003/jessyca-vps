@@ -1,6 +1,6 @@
 # JESSYCA en un VPS
 
-Asistente de Diego por WhatsApp con Baileys, FastAPI y Ollama local. Exportación del código entregado el 7 de octubre de 2026, preparada para instalación en **otro VPS Ubuntu 22.04 x86_64**, con sudo, systemd y salida a Internet. Referencia de hardware: 4 vCPU, 8 GB de RAM, 100 GB de disco.
+Asistente por WhatsApp con Baileys, FastAPI y Ollama local. Exportación del código entregado el 7 de octubre de 2026, preparada para instalación en **otro VPS Ubuntu 22.04 x86_64**, con sudo, systemd y salida a Internet. Referencia de hardware: 4 vCPU, 8 GB de RAM, 100 GB de disco.
 
 ## Funciones conservadas
 
