@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {route,stillAllowed,markAnswered,chatStatus} from './presence.js';
+import {installConversationTracking,isBotMessage} from './crm-conversations.js';
+const jid='51900000000@s.whatsapp.net';
+const sock={user:{id:'51976231105@s.whatsapp.net'},sendMessage:async(j,c,o)=>({key:{remoteJid:j,id:o.messageId,fromMe:true}})};
+const msg=(fromMe=false,text='',id='m1')=>({key:{remoteJid:jid,fromMe,id}});
+let t=route(sock,msg(),'hola');assert.equal(t.kind,'answer');assert.ok(t.prefix.includes('¡Hola! 😊'));
+markAnswered(t);assert.equal(route(sock,msg(),'precio').prefix,'');
+route(sock,msg(true),'jessyca -');assert.equal(stillAllowed(t),false);assert.equal(route(sock,msg(),'hola').kind,'ignore');
+route(sock,msg(false),'jessyca +');assert.equal(chatStatus(jid).active,false);
+route(sock,msg(true),'jessyca +');assert.equal(route(sock,msg(),'hola').kind,'answer');
+const tracker=installConversationTracking(sock,()=> 'BOT-ID');
+await sock.sendMessage(jid,{text:'jessyca -'});assert.ok(tracker.isBotMessage({id:'BOT-ID'}));assert.ok(isBotMessage({id:'BOT-ID'}));
+assert.equal(chatStatus(jid).active,true);
+console.log('PASS: inicio automático, saludo único, controles del propietario, cancelación y reconocimiento del bot.');

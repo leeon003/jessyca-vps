@@ -1,4 +1,12 @@
-import os
+from app.ramy_product_photos import handle_product_photo
+# RAMY_FOTOS_PRODUCTOS_V1
+from app.ramy_progress import track_progress
+from app.ramy_checkout import handle_checkout, receive_receipt, expects_receipt, checkout_context
+from app.ramy_payments import payment_reply
+# RAMY_QR_PAGOS_V1
+from app.ramy_sales import catalog as consultar_productos
+from app.ramy_sales import grounded_messages, guard_reply, internal_request, INTERNAL, UNAVAILABLE
+# RAMY_VENTAS_V2
 from app.web_search import handle_search
 from app.memory_store import load_histories, save_histories
 from app.contact_profiles import (
@@ -21,11 +29,11 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path("/home/admin/jessyca-whatsapp")
 INSTRUCTIONS = (ROOT / "sales_prompt.txt").read_text()
 
-TEXT_MODEL = os.getenv("TEXT_MODEL", "qwen3:4b-instruct-2507-q4_K_M")
-VISION_MODEL = os.getenv("VISION_MODEL", "qwen3-vl:4b-instruct-q4_K_M")
+TEXT_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
+VISION_MODEL = "qwen3-vl:4b-instruct-q4_K_M"
 
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 OLLAMA_GENERATE_URL = "http://127.0.0.1:11434/api/generate"
@@ -210,15 +218,15 @@ def build_system_prompt(
 
     static_rules = """
 REGLAS:
-- Eres JESSYCA, asistente de Diego; nunca eres Diego.
+- Eres JESSYCA, asesora de ventas de Tiendas RAMY. No eres asistente personal de nadie.
 - Quien escribe es el contacto actual.
 - Usa historial y perfil solo cuando sean relevantes.
-- Los datos del perfil pertenecen al contacto, no a JESSYCA ni a Diego.
+- Los datos del perfil pertenecen al cliente, no a JESSYCA.
 - No inventes nombres, relaciones, fechas, preferencias, hechos ni pendientes.
 - Si falta un dato, dilo claramente.
 - Prioriza datos explícitos del contacto sobre inferencias.
 - No menciones archivos, bases de datos, perfiles ni mecanismos internos.
-- No afirmes que Diego leyó, aceptó, confirmó o hará algo sin evidencia.
+- No inventes compras confirmadas, pagos verificados ni decisiones del cliente.
 - No marques pendientes como completados sin confirmación.
 - Responde de forma natural, breve y adecuada para WhatsApp.
 """
@@ -331,7 +339,7 @@ def save_conversation(
             )
 
 
-def ollama_chat(
+def _ramy_model_chat(
     model,
     messages,
     keep_alive,
@@ -385,9 +393,54 @@ def ollama_chat(
     return reply
 
 
+
+
+def ollama_chat(model, messages, keep_alive, timeout=90, num_predict=180, num_ctx=4096):
+    products = consultar_productos()
+    if not products:
+        return UNAVAILABLE
+    current = next((m.get('content', '') for m in reversed(messages) if m.get('role') == 'user'), '')
+    if internal_request(current):
+        return INTERNAL
+    # Las respuestas antiguas que ofrecían servicios internos no vuelven al modelo.
+    messages = [m for m in messages if m.get('role') != 'assistant' or not internal_request(m.get('content', ''))]
+    reply = _ramy_model_chat(model, grounded_messages(messages, products), keep_alive, timeout, num_predict, max(num_ctx, 4096))
+    return guard_reply(reply, products)
+
 @app.post("/chat")
+@track_progress
 def chat(message: Message):
     text = message.text.strip()
+
+    with memory_lock:
+        photo_previous = list(histories.get(message.chat_id, []))[-8:]
+    photo_reply = handle_product_photo(message.chat_id, text, photo_previous)
+    if photo_reply is not None:
+        save_conversation(message.chat_id, photo_previous, text, photo_reply['reply'])
+        return photo_reply
+    sales_reply = handle_checkout(message.chat_id, text, histories.get(message.chat_id, []))
+    if sales_reply is not None:
+        return sales_reply
+    message.assistant_context = (message.assistant_context + checkout_context(message.chat_id))[-1200:]
+
+    official_payment = payment_reply(text)
+    if official_payment is not None:
+        return official_payment
+
+    # RAMY_SALUDO_V1
+    saludo = text.casefold().strip(" ¡!¿?.,:;😊👋✨\n\t")
+    if saludo in {
+        "hola", "holi", "holis", "buenas",
+        "buenos dias", "buenos días",
+        "buenas tardes", "buenas noches"
+    }:
+        return {
+            "reply": (
+                "Soy JESSYCA, asesora de ventas de Tiendas RAMY. "
+                "¡Hola! 😊\n"
+                "¿En qué puedo ayudarte hoy con nuestros productos? 🛍️✨"
+            )
+        }
 
     if not text:
         raise HTTPException(
@@ -415,11 +468,59 @@ def chat(message: Message):
         time.monotonic() - t_profile,
     )
 
+
+    consulta = text.lower()
+    palabras_catalogo = (
+        "qué productos",
+        "que productos",
+        "qué vendes",
+        "que vendes",
+        "catálogo",
+        "catalogo",
+        "productos disponibles",
+        "qué tienes disponible",
+        "que tienes disponible",
+    )
+
+    if any(p in consulta for p in palabras_catalogo):
+        productos = consultar_productos()
+
+        if productos is None:
+            return {
+                "reply": "Por el momento no puedo consultar el catálogo. Intenta nuevamente en unos minutos."
+            }
+
+        if not productos:
+            return {
+                "reply": "En este momento no tengo productos comerciales disponibles para mostrarte."
+            }
+
+        lineas = ["Estos son nuestros productos disponibles:"]
+
+        for producto in productos[:10]:
+            nombre = producto.get("nombre", "Producto")
+            precio = producto.get("precio", "")
+            disponible = producto.get("disponible", 0)
+
+            if disponible > 0:
+                lineas.append(
+                    f"• {nombre} — S/ {precio}"
+                )
+
+        if len(lineas) == 1:
+            lineas.append("Por ahora no tenemos productos con stock disponible.")
+
+        lineas.append("¿Cuál te gustaría conocer mejor?")
+
+        reply = "\n".join(lineas)
+        with memory_lock:
+            previous = list(histories.get(message.chat_id, []))[-4:]
+        save_conversation(message.chat_id, previous, text, reply)
+        return {"reply": reply}
+
     t_search = time.monotonic()
 
-    search_reply = handle_search(
-        text
-    )
+    search_reply = None  # Ventas: sin búsqueda web general.
 
     logger.info(
         "PERF búsqueda: %.3f s",
@@ -530,7 +631,11 @@ def chat(message: Message):
 
 
 @app.post("/vision")
+@track_progress
 def vision(message: VisionMessage):
+    sales_reply = receive_receipt(message.chat_id, message.image)
+    if sales_reply is not None:
+        return sales_reply
     text = message.text.strip()
 
     if not text:
@@ -850,3 +955,8 @@ def audio(message: AudioMessage):
 
     finally:
         generation_lock.release()
+
+
+@app.get('/ramy/receipt-status')
+def ramy_receipt_status(chat_id: str):
+    return {'expects_receipt': expects_receipt(chat_id)}

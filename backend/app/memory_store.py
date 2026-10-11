@@ -3,8 +3,8 @@ import os
 from collections import OrderedDict
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = Path(os.getenv("JESSYCA_DATA_DIR", str(ROOT / "data")))
+ROOT = Path("/home/admin/jessyca-whatsapp")
+DATA_DIR = ROOT / "data"
 MEMORY_FILE = DATA_DIR / "conversations.json"
 
 MAX_CONVERSATIONS = 200

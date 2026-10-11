@@ -5,8 +5,8 @@ from pathlib import Path
 from threading import Lock
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = Path(os.getenv("JESSYCA_DATA_DIR", str(ROOT / "data")))
+ROOT = Path("/home/admin/jessyca-whatsapp")
+DATA_DIR = ROOT / "data"
 PROFILE_FILE = DATA_DIR / "contact_profiles.json"
 
 _lock = Lock()

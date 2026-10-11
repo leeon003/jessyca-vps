@@ -30,3 +30,21 @@ config.env
 *.key
 id_ed25519*
 id_rsa*
+
+# RAMY: código sin datos privados
+**/__pycache__/
+**/*.pyc
+**/node_modules/
+**/.venv*/
+**/*.bak*
+**/backups/
+**/uploads/
+**/data/
+**/.env
+**/.env.*
+!**/.env.example
+**/config.env
+**/*.dump
+**/*.log
+**/.jessyca-whatsapp-session/
+**/.jessyca-presence.json

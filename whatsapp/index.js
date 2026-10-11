@@ -1,9 +1,14 @@
+import { installConversationTracking, recordIncoming, recordStatuses, recordProgress } from './crm-conversations.js';
 import { route, stillAllowed, markAnswered } from './presence.js';
+// RAMY_FAST_WELCOME_V1
+import { createFastWelcome } from './fast-welcome.mjs';
+const fastWelcome = createFastWelcome({stillAllowed, markAnswered});
 
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   normalizeMessageContent,
+  generateMessageIDV2,
   downloadContentFromMessage
 } from '@whiskeysockets/baileys';
 
@@ -18,7 +23,7 @@ import { join } from 'node:path';
 
 process.umask(0o077);
 
-const authDir = process.env.JESSYCA_AUTH_DIR || join(
+const authDir = join(
   homedir(),
   '.jessyca-whatsapp-session'
 );
@@ -28,6 +33,8 @@ const logger = pino({
 });
 
 const seen = new Set();
+// RAMY_VENTAS_V2: registro persistente de IDs recibidos.
+import { claimMessage } from "./ramy-dedup.mjs";
 const queues = new Map();
 let globalQueue = Promise.resolve();
 const messageBuffers = new Map();
@@ -39,6 +46,7 @@ const IMAGE_MAX_DIMENSION = 512;
 const IMAGE_JPEG_QUALITY = 72;
 
 let reconnectDelay = 2000;
+let reconnectTimer = null;
 
 
 /*
@@ -130,6 +138,30 @@ async function getAudioBase64(message) {
 }
 
 
+async function receiptAwareImage(sock, jid, message, ticket) {
+  try {
+  const response = await fetch('http://127.0.0.1:8001/ramy/receipt-status?chat_id=' + encodeURIComponent(getStableChatId(jid, ticket)), {signal: AbortSignal.timeout(8000)});
+  if (!response.ok) throw new Error('No se pudo consultar el pedido para esta imagen');
+  const data = await response.json();
+  if (!data.expects_receipt) return getOptimizedImageBase64(message);
+  const content = normalizeMessageContent(message.message);
+  const stream = await downloadContentFromMessage(content.imageMessage, 'image');
+  const chunks = []; let size = 0;
+  for await (const chunk of stream) {
+    size += chunk.length;
+    if (size > 8 * 1024 * 1024) throw new Error('Comprobante mayor a 8 MB');
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString('base64');
+  } catch (error) {
+    if (stillAllowed(ticket)) {
+      await sock.sendMessage(jid, {text: 'No pude procesar esta imagen. Si es tu comprobante, reenvíalo como foto JPG, PNG o WebP de hasta 8 MB. No he confirmado su registro ni el pago.'});
+      markAnswered(ticket);
+    }
+    return null;
+  }
+}
+
 async function getOptimizedImageBase64(message) {
   const content = normalizeMessageContent(
     message.message
@@ -184,6 +216,8 @@ async function answerText(
   }
 
   let reply;
+  let paymentQr = false;
+  let productImage = null;
 
   try {
     const response = await fetch(
@@ -220,6 +254,11 @@ async function answerText(
     }
 
     reply = data.reply.trim();
+    if (data.sales_progress) recordProgress(jid, ticket, data.sales_progress);
+    paymentQr = data.payment_qr === true;
+    if (typeof data.product_image_base64 === 'string' && data.product_image_base64.length <= 7000000) {
+      productImage = Buffer.from(data.product_image_base64, 'base64');
+    }
 
   } catch (error) {
     console.log(
@@ -238,11 +277,14 @@ async function answerText(
 
   await sock.sendMessage(
     jid,
-    {
-      text:
-        '◆ JESSYCA\n' +
-        '────────────\n' +
-        (ticket.prefix + reply).slice(0, 12000)
+    productImage ? {
+      image: productImage,
+      caption: (/\bsoy\s+jessyca\b/i.test(reply) ? reply : ticket.prefix + reply).slice(0, 1024)
+    } : paymentQr ? {
+      image: { url: '/home/admin/whatsapp-bridge/assets/yape-ramy.png' },
+      caption: (/\bsoy\s+jessyca\b/i.test(reply) ? reply : ticket.prefix + reply).slice(0, 1024)
+    } : {
+      text: (/\bsoy\s+jessyca\b/i.test(reply) ? reply : ticket.prefix + reply).slice(0, 12000)
     }
   );
 
@@ -262,7 +304,8 @@ async function answerAudio(
   sock,
   jid,
   audioBase64,
-  ticket
+  ticket,
+  sourceMessage
 ) {
   if (!stillAllowed(ticket)) {
     return;
@@ -324,6 +367,7 @@ async function answerAudio(
     }
 
     reply = data.reply.trim();
+    if (data.sales_progress) recordProgress(jid, ticket, data.sales_progress);
 
     if (
       typeof data.transcript === 'string'
@@ -332,9 +376,7 @@ async function answerAudio(
         data.transcript.trim();
     }
 
-    console.log(
-      `Audio transcrito: ${transcript.slice(0, 200)}`
-    );
+    if (transcript && sourceMessage) recordIncoming(sourceMessage, transcript, 'audio');
 
   } catch (error) {
     console.log(
@@ -355,9 +397,7 @@ async function answerAudio(
     jid,
     {
       text:
-        '◆ JESSYCA\n' +
-        '────────────\n' +
-        (ticket.prefix + reply).slice(
+        (/\bsoy\s+jessyca\b/i.test(reply) ? reply : ticket.prefix + reply).slice(
           0,
           12000
         )
@@ -425,6 +465,7 @@ async function answerVision(
     }
 
     reply = data.reply.trim();
+    if (data.sales_progress) recordProgress(jid, ticket, data.sales_progress);
 
   } catch (error) {
     console.log(
@@ -445,9 +486,7 @@ async function answerVision(
     jid,
     {
       text:
-        '◆ JESSYCA\n' +
-        '────────────\n' +
-        (ticket.prefix + reply).slice(0, 12000)
+        (/\bsoy\s+jessyca\b/i.test(reply) ? reply : ticket.prefix + reply).slice(0, 12000)
     }
   );
 
@@ -567,7 +606,8 @@ function queueAudioAnswer(
         sock,
         jid,
         audioBase64,
-        fresh
+        fresh,
+        message
       );
     }
   );
@@ -602,9 +642,7 @@ function queueVisionAnswer(
       }
 
       const imageBase64 =
-        await getOptimizedImageBase64(
-          message
-        );
+        await receiptAwareImage(sock, jid, message, fresh);
 
       if (!imageBase64) {
         return;
@@ -778,6 +816,8 @@ async function connect() {
     syncFullHistory: false
   });
 
+  const tracking = installConversationTracking(sock, generateMessageIDV2);
+
   sock.ev.on(
     'creds.update',
     () => {
@@ -815,6 +855,8 @@ async function connect() {
       }
 
       if (connection === 'close') {
+        sock.ev.removeAllListeners('messages.upsert');
+        if (reconnectTimer) return;
         const code =
           lastDisconnect?.error?.output?.statusCode;
 
@@ -832,8 +874,9 @@ async function connect() {
           `Conexión cerrada (${code ?? 'sin código'}). Reconectando...`
         );
 
-        setTimeout(
+        reconnectTimer = setTimeout(
           () => {
+            reconnectTimer = null;
             connect().catch(() => {
               console.error(
                 'No se pudo reconectar.'
@@ -854,7 +897,7 @@ async function connect() {
 
   sock.ev.on(
     'messages.upsert',
-    ({ type, messages }) => {
+    async ({ type, messages }) => {
       console.log(
         `[WHATSAPP EVENT] type=${type} mensajes=${messages?.length ?? 0}`
       );
@@ -939,6 +982,7 @@ async function connect() {
           !hasImage &&
           !hasAudio
         ) {
+          recordIncoming(message, text, 'otro');
           continue;
         }
 
@@ -950,9 +994,9 @@ async function connect() {
         }
 
         const id =
-          `${jid}:${message.key.id}`;
+          message.key.id;
 
-        if (seen.has(id)) {
+        if (seen.has(id) || !claimMessage(id)) {
           continue;
         }
 
@@ -963,6 +1007,8 @@ async function connect() {
             seen.values().next().value
           );
         }
+
+        if (message.key.fromMe && tracking.isBotMessage(message.key)) continue;
 
         let ticket;
 
@@ -978,14 +1024,8 @@ async function connect() {
             routingText
           );
 
-          console.log(
-            '[ROUTE RESULT]',
-            'jid=', jid,
-            'fromMe=', message.key.fromMe,
-            'text=', JSON.stringify(routingText),
-            'kind=', ticket?.kind,
-            'revision=', ticket?.revision
-          );
+          recordIncoming(message, text, hasAudio ? 'audio' : hasImage ? 'imagen' : hasOtherMedia ? 'otro' : 'texto');
+          if (message.key.fromMe) recordStatuses();
         } catch (error) {
           console.error(
             'No se pudo guardar el estado:',
@@ -1003,8 +1043,6 @@ async function connect() {
             jid,
             {
               text:
-                '◆ JESSYCA\n' +
-                '────────────\n' +
                 ticket.reply
             }
           ).catch(() =>
@@ -1018,6 +1056,16 @@ async function connect() {
 
         if (ticket.kind !== 'answer') {
           continue;
+        }
+
+        // Saludo inicial sin buffer, cola global ni llamada al modelo.
+        if (!hasImage && !hasAudio && !hasOtherMedia) {
+          try {
+            if (await fastWelcome(sock, jid, text, ticket)) continue;
+          } catch (error) {
+            console.error('No se pudo enviar el saludo rápido.');
+            // Sigue el flujo existente como respaldo ante fallo de envío.
+          }
         }
 
         if (hasAudio) {
