@@ -73,15 +73,22 @@ async function flush() {
   } finally { busy=false; }
 }
 setInterval(flush,2000).unref();
+let beforeBotSend=async()=>{};
+export function setControlBarrier(fn){beforeBotSend=fn;}
+
 export function installConversationTracking(sock, generateId) {
   const send=sock.sendMessage.bind(sock);
   sock.sendMessage=async (jid,content,options={}) => {
+    const human=options.ramyHuman===true;
+    const self=[sock.user?.id,sock.user?.lid].filter(Boolean).some(key=>norm(key)===norm(jid));
+    if(!human&&!self){await beforeBotSend(jid);if(!chatStatus(jid).active)throw Error('Chat pausado: respuesta automática cancelada');}
+    const cleanOptions={...options};delete cleanOptions.ramyHuman;
     const id=options.messageId || generateId(sock.user?.id);
     // Persistir antes de enviar: también reconoce ecos tras reinicios.
     ids[id]=Date.now();
     try { saveIds(); } catch { console.error('CRM: identificador del bot guardado solo en memoria por un error de disco.'); }
-    const sent=await send(jid,content,{...options,messageId:id});
-    enqueue(event(jid,undefined,sent?.key?.id||id,'jessyca',content.text||content.caption||'', 'texto'));
+    const sent=await send(jid,content,{...cleanOptions,messageId:id});
+    enqueue(event(jid,undefined,sent?.key?.id||id,human?'propietario':'jessyca',content.text||content.caption||'', 'texto'));
     return sent;
   };
   recordStatuses();

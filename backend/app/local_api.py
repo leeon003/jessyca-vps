@@ -960,3 +960,15 @@ def audio(message: AudioMessage):
 @app.get('/ramy/receipt-status')
 def ramy_receipt_status(chat_id: str):
     return {'expects_receipt': expects_receipt(chat_id)}
+
+# RAMY_AVISO_SALDO_V1
+from app.ramy_notifications import router as ramy_notifications_router
+app.include_router(ramy_notifications_router)
+
+# RAMY_RAPIDEZ_V1
+@app.post('/ramy/fast-text')
+@track_progress
+def ramy_fast_text(message: Message):
+    from app.ramy_fast_text import try_fast
+    import sys
+    return try_fast(message,sys.modules[__name__])

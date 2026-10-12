@@ -119,3 +119,18 @@ export function allChatStatuses() {
   return [...new Set([...Object.keys(state.chats), ...Object.keys(state.blocked)])]
     .map(jid => ({ jid, ...chatStatus(jid) }));
 }
+
+// RAMY_ATENCION_HUMANA_V1: misma memoria y archivo que jessyca -/+.
+export function setChatActive(keys,active) {
+  if(typeof active!=='boolean'||!Array.isArray(keys)||!keys.length||keys.some(k=>!/^[0-9]{5,30}@(s\.whatsapp\.net|lid)$/.test(k)))throw Error('Control inválido');
+  const previous=JSON.parse(JSON.stringify(state));
+  try {
+    const all=relatedKeys(keys.map(normalize));
+    for(const key of all) {
+      state.epochs[key]=(state.epochs[key]||0)+1;
+      if(active){delete state.blocked[key];delete state.paused[key];}
+      else state.blocked[key]=true;
+    }
+    save();return chatStatus(all[0]);
+  }catch(e){state=previous;throw e;}
+}

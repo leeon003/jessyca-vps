@@ -11,7 +11,7 @@ def payment_reply(text):
         return None
     return {
         'reply': (
-            'Puedes usar estos medios oficiales de Tiendas RAMY 😊\n\n'
+            'Puedes usar estos medios oficiales de Tiendas RAMY 😊 https://www.ramy.info/\n\n'
             'Yape: 923248212\n'
             'Titular: ALEXA ROJAS\n\n'
             'Cuenta BCP Soles: 19107507519051\n'

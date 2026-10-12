@@ -1,3 +1,9 @@
+import { startCRMControls } from './ramy-crm-controls.mjs';
+let stopCRMControls=()=>{};
+import { createChatQueue, ramyTextRequest, ramyInferenceFetch } from './ramy-speed.mjs';
+async function ramyInferenceFetchChecked(ticket,url,options) { return ramyInferenceFetch(url,options,()=>stillAllowed(ticket)); }
+import { startRamyOrderNotifications } from './ramy-order-notifications.mjs';
+let stopRamyOrderNotifications = () => {};
 import { installConversationTracking, recordIncoming, recordStatuses, recordProgress } from './crm-conversations.js';
 import { route, stillAllowed, markAnswered } from './presence.js';
 // RAMY_FAST_WELCOME_V1
@@ -36,10 +42,10 @@ const seen = new Set();
 // RAMY_VENTAS_V2: registro persistente de IDs recibidos.
 import { claimMessage } from "./ramy-dedup.mjs";
 const queues = new Map();
-let globalQueue = Promise.resolve();
+const ramyQueue=createChatQueue(error=>console.log("Respuesta no enviada:",error.message));
 const messageBuffers = new Map();
 
-const MESSAGE_BUFFER_MS = 5000;
+const MESSAGE_BUFFER_MS = 1200;
 const MAX_BUFFER_TEXT = 12000;
 
 const IMAGE_MAX_DIMENSION = 512;
@@ -220,31 +226,9 @@ async function answerText(
   let productImage = null;
 
   try {
-    const response = await fetch(
-      'http://127.0.0.1:8001/chat',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          chat_id: getStableChatId(jid, ticket),
-          text,
-          assistant_context: ticket.context
-        }),
-        signal: AbortSignal.timeout(90000)
-      }
-    );
-
-    if (!response.ok) {
-      const detail = await response.text();
-
-      throw new Error(
-        `HTTP ${response.status}: ${detail.slice(0, 300)}`
-      );
-    }
-
-    const data = await response.json();
+    const data = await ramyTextRequest({
+      chat_id:getStableChatId(jid,ticket),text,assistant_context:ticket.context
+    },()=>stillAllowed(ticket));
 
     if (
       typeof data.reply !== 'string' ||
@@ -319,8 +303,7 @@ async function answerAudio(
       `Procesando nota de voz de ${jid}...`
     );
 
-    const response = await fetch(
-      'http://127.0.0.1:8001/audio',
+    const response = await ramyInferenceFetchChecked(ticket,'http://127.0.0.1:8001/audio',
       {
         method: 'POST',
 
@@ -430,8 +413,7 @@ async function answerVision(
       ? text.trim()
       : 'Describe brevemente esta imagen en español sin inventar detalles.';
 
-    const response = await fetch(
-      'http://127.0.0.1:8001/vision',
+    const response = await ramyInferenceFetchChecked(ticket,'http://127.0.0.1:8001/vision',
       {
         method: 'POST',
         headers: {
@@ -501,29 +483,8 @@ async function answerVision(
 /*
  * Cola por contacto.
  */
-function queueTask(
-  jid,
-  task
-) {
-  const next = globalQueue
-    .then(async () => {
-      console.log(
-        `[COLA IA] Procesando ${jid}`
-      );
-
-      await task();
-    })
-    .catch(error => {
-      console.log(
-        'Respuesta no enviada:',
-        error.message
-      );
-    });
-
-  globalQueue = next.then(
-    () => undefined,
-    () => undefined
-  );
+function queueTask(jid,task) {
+  return ramyQueue(jid,task);
 }
 
 function queueTextAnswer(
@@ -534,7 +495,7 @@ function queueTextAnswer(
   ticket
 ) {
   queueTask(
-    jid,
+    getStableChatId(jid,ticket),
     async () => {
       if (!stillAllowed(ticket)) {
         return;
@@ -572,7 +533,7 @@ function queueAudioAnswer(
   ticket
 ) {
   queueTask(
-    jid,
+    getStableChatId(jid,ticket),
     async () => {
       if (!stillAllowed(ticket)) {
         return;
@@ -622,7 +583,7 @@ function queueVisionAnswer(
   ticket
 ) {
   queueTask(
-    jid,
+    getStableChatId(jid,ticket),
     async () => {
       if (!stillAllowed(ticket)) {
         return;
@@ -848,6 +809,9 @@ async function connect() {
       }
 
       if (connection === 'open') {
+        stopCRMControls(); stopCRMControls=startCRMControls(sock);
+        stopRamyOrderNotifications();
+        stopRamyOrderNotifications = startRamyOrderNotifications(sock,"/home/admin/whatsapp-bridge/assets/yape-ramy.png");
         reconnectDelay = 2000;
         console.log(
           'WHATSAPP CONECTADO. JESSYCA responderá chats privados.'
@@ -855,6 +819,8 @@ async function connect() {
       }
 
       if (connection === 'close') {
+        stopCRMControls();
+        stopRamyOrderNotifications();
         sock.ev.removeAllListeners('messages.upsert');
         if (reconnectTimer) return;
         const code =

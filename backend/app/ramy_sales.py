@@ -26,7 +26,15 @@ def normalize_catalog(data):
             continue
         if not isinstance(name, str) or not name.strip() or not price.is_finite() or price < 0 or p.get('moneda', 'PEN') != 'PEN':
             continue
-        result.append({'id': str(p.get('id', '')), 'nombre': name.strip()[:160], 'precio': format(price, '.2f'), 'descripcion': str(p.get('descripcionCorta', ''))[:500], 'disponible': 1})
+        # RAMY_OFERTAS_V1: conservar únicamente descuentos reales del catálogo.
+        previous = None
+        try:
+            candidate = Decimal(str(p.get('precioAnterior')))
+            if candidate.is_finite() and candidate > price:
+                previous = format(candidate, '.2f')
+        except (InvalidOperation, ValueError, TypeError):
+            pass
+        result.append({'id': str(p.get('id', '')), 'nombre': name.strip()[:160], 'precio': format(price, '.2f'), 'descripcion': str(p.get('descripcionCorta', ''))[:500], 'disponible': 1, 'oferta': previous is not None, 'precioAnterior': previous})
     return result
 
 def catalog():
@@ -63,6 +71,7 @@ def guard_reply(reply, products):
     if internal_request(reply):
         return INTERNAL
     prices = {Decimal(p['precio']) for p in products}
+    prices.update(Decimal(p['precioAnterior']) for p in products if p.get('precioAnterior'))
     for amount in re.findall(r'S/\s*(\d+(?:[.,]\d{1,2})?)', reply):
         if Decimal(amount.replace(',', '.')) not in prices:
             return 'Para darte un precio exacto, revisemos los productos disponibles en https://www.ramy.info/. ¿Cuál te interesa?'
