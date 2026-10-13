@@ -50,7 +50,22 @@ def phone(chat_id):
     m = re.fullmatch(r'whatsapp:(51\d{9})@s\.whatsapp\.net', chat_id)
     return m.group(1) if m else None
 
+
+# RAMY_SHALOM_V1
+def _ramy_quantity_text(text):
+    text = norm(text).strip(' ¡!¿?.,;:"“”‘’')
+    numbers = {'un':1,'uno':1,'una':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,'seis':6,'siete':7,'ocho':8,'nueve':9,'diez':10}
+    return re.sub(r'^(un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b', lambda m: str(numbers[m.group(1)]), text)
+
+def _ramy_delivery_question(text):
+    return bool(re.search(r'\b(entrega|llega|llegaria|llegara|demora|tarda|plazo)\b|\bcuando\b.*\b(recibo|recibir|recibiria)\b', text)) and not bool(re.search(r'\b(codigo|clave)\b', text))
+
+def _ramy_delivery_reply(s):
+    return response('Trabajamos con Shalom para recojo en agencia 😊. El tiempo estimado debe confirmarse según la agencia de destino; pagar hoy no garantiza entrega mañana. ¿En qué agencia deseas recoger tu pedido?')
+
 def prompt(s):
+    if s.get("_ramy_await_district"):
+        return "¿En qué distrito deseas recoger el pedido?"
     stage = s['stage']
     if stage == 'confirm': return summary(s)
     if stage == 'choice': return '¿Quieres uno de cada producto o dos unidades de uno? Si es de uno, dime cuál.'
@@ -59,7 +74,7 @@ def prompt(s):
         'quantity':'¿Cuántas unidades deseas?', 'name':'¿Cuál es tu nombre completo?',
         'phone':'¿Cuál es tu número de WhatsApp? Escríbelo con 9 dígitos o con 51 delante.',
         'city':'¿En qué ciudad y distrito recibirás tu pedido?',
-        'address':'¿Cuál es tu dirección o agencia de destino para la entrega?',
+        'address':'¿En qué agencia Shalom deseas recoger tu pedido? Si no sabes cuál, escribe «no sé» para que el equipo te ayude a elegirla.',
         'reference':'¿Tienes alguna referencia para la entrega? Si no, escribe «sin referencia».'}[stage]
 
 # RAMY_CARRITO_WHATSAPP_V1
@@ -74,7 +89,7 @@ def summary(s):
     return (f"Revisa tu pedido:\n{details}\nTotal de productos: S/ {total:.2f}\n"
         f"Un único adelanto para este pedido: S/ 10.00\nNombre: {s['name']}\nWhatsApp: {s['phone']}\n"
         f"Destino: {s['city']}\nDirección/agencia: {s['address']}\nReferencia: {s['reference'] or 'Sin referencia'}\n"
-        'El costo y las condiciones de envío los confirma el equipo. ¿Confirmas que registre este pedido? Escribe «confirmo» o «cancelar compra».')
+        'Enviamos por Shalom para recojo en agencia; el tiempo estimado lo confirma el equipo. ¿Confirmas que registre este pedido? Escribe «confirmo» o «cancelar compra».')
 
 def quantity_prompt(s):
     pending=next((l for l in cart(s) if not l.get('quantity')),None)
@@ -107,7 +122,7 @@ def status(s):
 # RAMY_CHECKOUT_CONVERSACIONAL_V2
 # RAMY_COMPRA_NATURAL_V3
 PRICE = re.compile(r'\b(precios?|cuanto(?:s)?(?: cuesta| vale| sale| es| seria| por| en total)?|costo|valor)\b')
-QUESTION = re.compile(r'\b(precio|cuanto|cual|como|cuando|donde|garantia|disponible|disponibilidad|envio|pagar|pago|yape|bcp|confirmo|cancelar|gracias|hola|ayuda|comprar)\b')
+QUESTION = re.compile(r'\b(precio|cuanto|cual|como|cuando|donde|caracteristicas?|descripcion|detalles|incluye|funciona|sirve|garantia|disponible|disponibilidad|envio|pagar|pago|yape|bcp|confirmo|cancelar|gracias|hola|ayuda|comprar)\b')
 
 def is_question(text):
     return '?' in text or '¿' in text or bool(QUESTION.search(norm(text)))
@@ -170,6 +185,8 @@ def product_mentions(n,products):
     selected=[]
     segments=re.split(r'\s+y\s+|,\s*',n)
     for segment in segments:
+        if re.fullmatch(r'(?:hola|holi|buenas|buenos dias|buenas tardes|buenas noches)[ !.😊👋]*',segment.strip()):
+            continue
         exact=[p for p in products if re.search(r'(?<!\w)'+re.escape(norm(p['nombre']))+r'(?:es|s)?(?!\w)',segment)]
         short=[p for p in products if re.search(product_pattern(p),segment)]
         matches=exact if exact else short
@@ -231,6 +248,15 @@ def handle_checkout(chat_id, text, previous=None):
             if len(inferred_offers)!=2:return response('¿Cuáles son los dos productos que deseas? Escribe sus nombres para evitar equivocarnos.')
             start=True
         start = start or accepted_offer
+        # RAMY_CAMPANA_PRODUCTO_V1: nombre aislado también inicia elección verificada.
+        if not s and not start and len(n.strip()) <= 160:
+            candidates = catalog()
+            try:
+                named = product_mentions(n, candidates or [])
+            except ValueError:
+                named = []
+            if len(named) == 1 and re.fullmatch(product_pattern(named[0]), n.strip(' ¡!¿?.,;')):
+                start = True
         if not s and not start: return None
         if not s:
             s = {'stage':'product','request':secrets.token_hex(24),'offered_ids':inferred_offers}
@@ -240,6 +266,8 @@ def handle_checkout(chat_id, text, previous=None):
             if n == 'nueva compra':
                 save(chat_id, {}); return handle_checkout(chat_id, 'quiero comprar')
             # RAMY_CODIGO_LIBERADO_V1: datos de retiro solo desde respuesta autorizada del CRM.
+            if _ramy_delivery_question(n):
+                return _ramy_delivery_reply(s)
             wants_status = bool(re.search(r'\b(codigo|clave|retiro|retirar|shalom|estado|saldo|transito|envio|confirma|confirmas|confirmar|confirmarme|confirmacion|pago|pagar|pague|transferi|yape|bcp|cci|qr|comprobante|deposite)\b', n)) or n in ('ok','okay','listo','gracias','muchas gracias','ya envie','si','confirmo')
             if wants_status:
                 try:
@@ -276,9 +304,14 @@ def handle_checkout(chat_id, text, previous=None):
                     return payment_message(order)
                 except Exception: return response('No pude consultar el estado del pedido. No deposites otro importe hasta que el equipo lo confirme.')
             return None
-        correction = re.search(r'\b(?:quiero|deseo|cambia(?:r)?(?: a)?|mejor)\s+(\d{1,3})(?:\s*(?:unidades?|nomas|no mas))?\b', n)
+        # RAMY_CANTIDAD_PALABRAS_V1
+        words = {'un':1,'uno':1,'una':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,'seis':6,'siete':7,'ocho':8,'nueve':9,'diez':10}
+        correction_text = re.sub(
+            r'\b(quiero|deseo|cambia(?:r)?(?: a)?|mejor|solo)\s+(?:solo\s+)?(un|uno|una|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\b',
+            lambda m: m.group(1)+' '+str(words[m.group(2)]), n)
+        correction = re.search(r'\b(?:quiero|deseo|cambia(?:r)?(?: a)?|mejor|solo)\s+(?:solo\s+)?(\d{1,3})(?:\s*(?:unidades?|nomas|no mas))?\b', correction_text)
         if correction and len(cart(s))>1:
-            matches=[l for l in cart(s) if norm(l['product']['nombre']) in n]
+            matches=[l for l in cart(s) if re.search(product_pattern(l['product']), n)]
             if len(matches)!=1:return response('¿De cuál producto quieres cambiar la cantidad? Escribe, por ejemplo, «quiero 2 difusores».')
             quantity=int(correction.group(1))
             if not 1<=quantity<=100:return response('La cantidad debe estar entre 1 y 100 unidades.')
@@ -331,7 +364,7 @@ def handle_checkout(chat_id, text, previous=None):
             save(chat_id,s)
             return response(f"El {s['product']['nombre']} cuesta S/ {Decimal(str(s['product']['precio'])):.2f} por unidad.\n"+prompt(s))
         elif stage == 'quantity':
-            m = re.fullmatch(r'(\d{1,3})(?:\s*(?:unidades?|por favor))?', n)
+            m = re.fullmatch(r'(\d{1,3})(?:\s*unidad(?:es)?)?(?:\s+por favor)?', _ramy_quantity_text(n))
             if not m or not 1 <= int(m.group(1)) <= 100: return response('Indica una cantidad entre 1 y 100 unidades. El CRM comprobará el stock antes de registrar.')
             if len(cart(s))>1:
                 pending=next(l for l in s['items'] if not l.get('quantity'))
@@ -346,6 +379,18 @@ def handle_checkout(chat_id, text, previous=None):
             if re.fullmatch(r'9\d{8}', value): value = '51'+value
             if not re.fullmatch(r'519\d{8}', value): return response('Escribe un celular peruano de 9 dígitos, empezando con 9.')
             s['phone'] = value; s['stage'] = 'city'
+        elif stage == 'city' and (len(n.split()) == 1 or n in ('lima metropolitana', 'puerto maldonado', 'cerro de pasco')):
+            if not valid_field('city', text.strip()): return response(prompt(s))
+            s['city'] = text.strip(); s['stage'] = 'address'
+            s['_ramy_await_district'] = True
+            save(chat_id,s); return response(prompt(s))
+        elif stage == 'address' and s.get('_ramy_await_district'):
+            if not valid_field('city', text.strip()): return response(prompt(s))
+            s['city'] += ' - ' + text.strip()
+            s.pop('_ramy_await_district', None)
+            save(chat_id,s); return response(prompt(s))
+        elif stage == 'address' and n in ('no se','no conozco','no tengo agencia','ninguna'):
+            return response('El equipo puede ayudarte a elegir una agencia Shalom en tu distrito. Primero necesitamos confirmar cuál usarás; todavía no registraré el pedido.')
         elif stage in ('city','address','reference'):
             limit = {'city':120,'address':1000,'reference':500}[stage]
             if not valid_field(stage, '' if stage == 'reference' and n in ('sin referencia','ninguna','no') else text.strip()): return response(prompt(s))

@@ -6,7 +6,7 @@ import unicodedata
 from decimal import Decimal
 from urllib.request import urlopen
 from urllib.parse import urlsplit
-from app.ramy_checkout import load, lock
+from app.ramy_checkout import load, lock, product_mentions
 
 ORIGIN='http://127.0.0.1:8000'
 
@@ -20,7 +20,10 @@ def handle_product_photo(chat_id,text,previous=None):
         with urlopen(ORIGIN+'/api/tienda/catalogo',timeout=5) as r: products=json.load(r)
         if not isinstance(products,list): raise ValueError()
         products=[p for p in products if p.get('stock')=='disponible' and not p.get('demo') and not str(p.get('sku','')).upper().startswith(('PRUEBA-','DEMO-'))]
-        matches=[p for p in products if norm(str(p['nombre'])) in n]
+        try:
+            matches=product_mentions(n,products)
+        except ValueError:
+            return {'reply':'Hay varios productos que coinciden. ¿De cuál quieres la foto?\n'+'\n'.join('• '+p['nombre'] for p in products[:10])}
         if not matches:
             with lock: chosen=load(chat_id).get('product',{}).get('id')
             matches=[p for p in products if p['id']==chosen]

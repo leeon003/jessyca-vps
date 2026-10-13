@@ -10,6 +10,30 @@ def try_fast(message,api):
     if len(text)>2000:return {'reply':'¿Puedes enviarme tu consulta en mensajes más cortos?','needs_ai':False}
     with api.memory_lock:previous=list(api.histories.get(message.chat_id,[]))[-8:]
     result=api.handle_product_photo(message.chat_id,text,previous)
+    if result is None and re.search(r'\b(caracteristicas?|descripcion|detalles|que incluye|para que sirve|como funciona|como se usa|garantia)\b',n):
+        from app.ramy_checkout import product_mentions, load, prompt
+        products=api.consultar_productos()
+        if products is None:
+            result={'reply':'No puedo comprobar la ficha del producto ahora. El equipo puede ayudarte antes de confirmar una compra.'}
+        else:
+            products=[p for p in products if p.get('disponible',0)>0]
+            draft=load(message.chat_id)
+            try:matches=product_mentions(n,products)
+            except ValueError:
+                matches=[]
+                result={'reply':'Hay varios productos que coinciden. Dime el nombre completo para darte la información correcta.'}
+            if result is None:
+                if not matches and draft.get('product'):
+                    matches=[p for p in products if p['id']==draft['product']['id']]
+                if not matches and len(products)==1:matches=products
+                if len(matches)!=1:
+                    result={'reply':'¿De cuál producto quieres la información?\n'+'\n'.join('• '+p['nombre'] for p in products[:10])}
+                else:
+                    p=matches[0]
+                    description=p.get('descripcion') or p.get('descripcionCorta') or ''
+                    info=('La garantía no está especificada en esta ficha. El equipo debe confirmártela antes de comprar.' if 'garantia' in n and 'garant' not in norm(description) else 'Esto figura en la ficha del producto: '+description if description else 'La ficha no tiene una descripción adicional. El equipo puede confirmar ese detalle.')
+                    next_step=prompt(draft) if draft.get('stage') and not draft.get('order') else '¿Qué otro dato del producto necesitas?'
+                    result={'reply':f"{p['nombre']} — S/ {Decimal(str(p['precio'])):.2f}\n{info}\n{next_step}"}
     if result is None:result=api.handle_checkout(message.chat_id,text,previous)
     if result is None:result=api.payment_reply(text)
     if result is None and n.strip(' ¡!¿?.,:;😊👋✨\n\t') in ('hola','holi','holis','buenas','buenos dias','buenas tardes','buenas noches'):
