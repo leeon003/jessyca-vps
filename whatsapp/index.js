@@ -1,3 +1,5 @@
+import { startRamyFollowups, rememberFollowupIncoming } from './ramy-followups.mjs';
+let stopRamyFollowups=()=>{};
 import { startCRMControls } from './ramy-crm-controls.mjs';
 let stopCRMControls=()=>{};
 import { createChatQueue, ramyTextRequest, ramyInferenceFetch } from './ramy-speed.mjs';
@@ -809,6 +811,7 @@ async function connect() {
       }
 
       if (connection === 'open') {
+        stopRamyFollowups(); stopRamyFollowups=startRamyFollowups(sock);
         stopCRMControls(); stopCRMControls=startCRMControls(sock);
         stopRamyOrderNotifications();
         stopRamyOrderNotifications = startRamyOrderNotifications(sock,"/home/admin/whatsapp-bridge/assets/yape-ramy.png");
@@ -819,6 +822,7 @@ async function connect() {
       }
 
       if (connection === 'close') {
+        stopRamyFollowups();
         stopCRMControls();
         stopRamyOrderNotifications();
         sock.ev.removeAllListeners('messages.upsert');
@@ -990,6 +994,7 @@ async function connect() {
             routingText
           );
 
+          rememberFollowupIncoming(message,text);
           recordIncoming(message, text, hasAudio ? 'audio' : hasImage ? 'imagen' : hasOtherMedia ? 'otro' : 'texto');
           if (message.key.fromMe) recordStatuses();
         } catch (error) {

@@ -1,3 +1,4 @@
+import { rememberFollowupReply } from './ramy-followups.mjs';
 // Registro local duradero: no contiene credenciales de WhatsApp ni bloquea respuestas.
 import { mkdirSync, readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -82,13 +83,15 @@ export function installConversationTracking(sock, generateId) {
     const human=options.ramyHuman===true;
     const self=[sock.user?.id,sock.user?.lid].filter(Boolean).some(key=>norm(key)===norm(jid));
     if(!human&&!self){await beforeBotSend(jid);if(!chatStatus(jid).active)throw Error('Chat pausado: respuesta automática cancelada');}
-    const cleanOptions={...options};delete cleanOptions.ramyHuman;
+    if(options.ramyFollowupGuard&&!options.ramyFollowupGuard())throw Error('Seguimiento cancelado por actividad o pausa');
+    const cleanOptions={...options};delete cleanOptions.ramyHuman;delete cleanOptions.ramyFollowup;delete cleanOptions.ramyFollowupGuard;
     const id=options.messageId || generateId(sock.user?.id);
     // Persistir antes de enviar: también reconoce ecos tras reinicios.
     ids[id]=Date.now();
     try { saveIds(); } catch { console.error('CRM: identificador del bot guardado solo en memoria por un error de disco.'); }
     const sent=await send(jid,content,{...cleanOptions,messageId:id});
     enqueue(event(jid,undefined,sent?.key?.id||id,human?'propietario':'jessyca',content.text||content.caption||'', 'texto'));
+    if(!self&&!options.ramyFollowup)rememberFollowupReply(jid,human);
     return sent;
   };
   recordStatuses();

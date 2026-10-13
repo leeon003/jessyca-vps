@@ -1125,3 +1125,7 @@ def ramy_fast_text(message: Message):
     from app.ramy_fast_text import try_fast
     import sys
     return try_fast(message,sys.modules[__name__])
+
+# RAMY_SEGUIMIENTO_HORAS_V1
+from app.ramy_followup_router import router as ramy_followup_router
+app.include_router(ramy_followup_router)
