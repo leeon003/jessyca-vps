@@ -14,7 +14,7 @@ def try_fast(message,api):
         from app.ramy_checkout import product_mentions, load, prompt
         products=api.consultar_productos()
         if products is None:
-            result={'reply':'No puedo comprobar la ficha del producto ahora. El equipo puede ayudarte antes de confirmar una compra.'}
+            result={'reply':'Ahora no puedo confirmar ese detalle. El equipo puede ayudarte antes de continuar con la compra.'}
         else:
             products=[p for p in products if p.get('disponible',0)>0]
             draft=load(message.chat_id)
@@ -31,7 +31,7 @@ def try_fast(message,api):
                 else:
                     p=matches[0]
                     description=p.get('descripcion') or p.get('descripcionCorta') or ''
-                    info=('La garantía no está especificada en esta ficha. El equipo debe confirmártela antes de comprar.' if 'garantia' in n and 'garant' not in norm(description) else 'Esto figura en la ficha del producto: '+description if description else 'La ficha no tiene una descripción adicional. El equipo puede confirmar ese detalle.')
+                    info=('Quiero darte una respuesta precisa: el equipo debe confirmar la garantía antes de tu compra.' if 'garantia' in n and 'garant' not in norm(description) else 'Te cuento sobre el producto 😊: '+description if description else 'Déjame confirmar ese detalle con el equipo para darte información correcta.')
                     next_step=prompt(draft) if draft.get('stage') and not draft.get('order') else '¿Qué otro dato del producto necesitas?'
                     result={'reply':f"{p['nombre']} — S/ {Decimal(str(p['precio'])):.2f}\n{info}\n{next_step}"}
     if result is None:result=api.handle_checkout(message.chat_id,text,previous)
@@ -49,7 +49,7 @@ def try_fast(message,api):
             products=[p for p in products if p.get('disponible',0)>0]
             if not products:result={'reply':'Ahora no hay productos disponibles en el catálogo. El equipo puede ayudarte.'}
             elif wants_catalog:
-                result={'reply':'Estos son nuestros productos disponibles:\n'+'\n'.join('• '+p['nombre']+' — S/ '+str(p['precio']) for p in products[:10])+'\n¿Cuál te gustaría conocer mejor?'}
+                result={'reply':'Con gusto 😊. Estos son nuestros productos disponibles:\n'+'\n'.join('• '+p['nombre']+' — S/ '+str(p['precio']) for p in products[:10])+'\n¿Cuál te gustaría conocer mejor?'}
             else:
                 from app.ramy_checkout import product_mentions
                 try:matches=product_mentions(n,products)

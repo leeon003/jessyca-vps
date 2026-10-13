@@ -71,23 +71,40 @@ def prompt(s):
     if stage == 'choice': return '¿Quieres uno de cada producto o dos unidades de uno? Si es de uno, dime cuál.'
     if stage == 'quantity' and len(cart(s))>1:return quantity_prompt(s)
     return {'product':'¿Qué producto o productos deseas comprar? Puedes escribir sus nombres.',
-        'quantity':'¿Cuántas unidades deseas?', 'name':'¿Cuál es tu nombre completo?',
+        'quantity':'Con gusto 😊. ¿Cuántas unidades deseas?', 'name':'¿Cuál es tu nombre completo? Así preparo tu pedido con los datos correctos 😊.',
         'phone':'¿Cuál es tu número de WhatsApp? Escríbelo con 9 dígitos o con 51 delante.',
-        'city':'¿En qué ciudad y distrito recibirás tu pedido?',
+        'city':'Gracias 😊. ¿En qué ciudad y distrito recibirás tu pedido?',
         'address':'¿En qué agencia Shalom deseas recoger tu pedido? Si no sabes cuál, escribe «no sé» para que el equipo te ayude a elegirla.',
-        'reference':'¿Tienes alguna referencia para la entrega? Si no, escribe «sin referencia».'}[stage]
+        'reference':'Ya casi terminamos 😊. ¿Tienes alguna referencia para la entrega? Si no, escribe «sin referencia».'}[stage]
 
 # RAMY_CARRITO_WHATSAPP_V1
 def cart(s):
     if len(s.get('items',[]))>1:return s['items']
     return [{'product':s['product'],'quantity':s.get('quantity')}] if s.get('product') else []
 
+
+# RAMY_CALIDEZ_V1: términos una vez, antes de recopilar datos personales.
+def _warm_prompt(chat_id, s):
+    next_question = prompt(s)
+    if (s.get('stage') in ('name', 'phone', 'city', 'address', 'reference')
+        and not s.get('order') and not s.get('_payment_terms_explained') and chat_id):
+        terms = (
+            'Te cuento cómo trabajamos 😊: *el adelanto es de S/10 por pedido*, '
+            'para separarlo y gestionar el envío por Shalom. Se descuenta del total.\n'
+            '*El saldo restante se completa al recogerlo en la agencia, antes de retirarlo.* '
+            'El equipo revisa el pago y autoriza el código de retiro.\n'
+        )
+        s['_payment_terms_explained'] = True
+        save(chat_id, s)
+        return terms + next_question
+    return next_question
+
 def summary(s):
     lines=cart(s)
     total=sum((Decimal(str(l['product']['precio']))*l['quantity'] for l in lines),Decimal('0'))
     details='\n'.join(f"• {l['quantity']} x {l['product']['nombre']} — S/ {Decimal(str(l['product']['precio'])):.2f} por unidad" for l in lines)
-    return (f"Revisa tu pedido:\n{details}\nTotal de productos: S/ {total:.2f}\n"
-        f"Un único adelanto para este pedido: S/ 10.00\nNombre: {s['name']}\nWhatsApp: {s['phone']}\n"
+    return (f"Te comparto el resumen para que lo revises con calma 😊:\n{details}\nTotal de productos: S/ {total:.2f}\n"
+        f"Un único adelanto para este pedido: *S/ 10.00* (se descuenta del total).\nNombre: {s['name']}\nWhatsApp: {s['phone']}\n"
         f"Destino: {s['city']}\nDirección/agencia: {s['address']}\nReferencia: {s['reference'] or 'Sin referencia'}\n"
         'Enviamos por Shalom para recojo en agencia; el tiempo estimado lo confirma el equipo. ¿Confirmas que registre este pedido? Escribe «confirmo» o «cancelar compra».')
 
@@ -110,11 +127,11 @@ def payment_message(order):
         return response(f"El comprobante de {payment['tipo'].lower()} del pedido #{order['pedido_id']} está pendiente de revisión manual. No repitas el depósito.")
     official = payment_reply('medios de pago')['reply'].split('Antes de depositar,')[0].strip()
     if payment['tipo']=='SALDO':
-        return response(f"Tu pedido #{order['pedido_id']} ya está en tránsito. 🚚\nEl CRM habilitó el pago del saldo.\nSaldo pendiente de productos: S/ {payment['monto']}\n\n"+official+
-            '\nEnvía el comprobante del saldo como foto JPG, PNG o WebP en este chat. El equipo revisará el pago. Después de verificarlo, el administrador debe liberar el código de retiro; no se libera automáticamente.',payment_qr=True)
+        return response(f"Tu pedido #{order['pedido_id']} ya está en tránsito. 🚚\nPara el recojo, queda este saldo de productos: S/ {payment['monto']}\n\n"+official+
+            '\n*El saldo se completa antes de retirar el pedido en la agencia.* Cuando lo pagues, envíame el comprobante; el equipo lo revisará y el administrador autorizará el código. Este aviso de tránsito no confirma que el pedido haya llegado.',payment_qr=True)
     return response(f"Tu pedido #{order['pedido_id']} quedó registrado.\nTotal de productos: S/ {order['total']}\n"
-        f"Importe de {payment['tipo'].lower()} pendiente: S/ {payment['monto']}\n\n" + official +
-        '\nEnvía el comprobante como foto JPG, PNG o WebP en este chat. Quedará pendiente de revisión manual; enviar una imagen no confirma el pago.', payment_qr=True)
+        f"Importe de {payment['tipo'].lower()} pendiente: *S/ {payment['monto']}*\n\n" + official +
+        '\nCuando hagas el adelanto, envíame el comprobante como foto JPG, PNG o WebP 😊. El equipo lo revisará; recibir la imagen no confirma el pago.', payment_qr=True)
 
 def status(s):
     return api('/pedidos/'+str(s['order']['pedido_id'])+'?'+urlencode({'whatsapp':s['phone']}))
@@ -173,7 +190,7 @@ def price_reply(s):
     if len(lines)>1:
         s['items']=lines
         if complete:text.append(f'Total de productos: S/ {total:.2f}. Un único adelanto: S/ 10.00 por este pedido.')
-    return response('\n'.join(text)+'\nEl envío se confirma por separado.\n'+prompt(s))
+    return response('\n'.join(text)+'\nEl envío se confirma por separado.\n'+_warm_prompt(s.get('chat_id'),s))
 
 # RAMY_NOMBRES_CORTOS_V1
 def product_pattern(p):
@@ -345,7 +362,7 @@ def handle_checkout(chat_id, text, previous=None):
             try:selected=choose_cart(s,selection,products)
             except ValueError as e:return response(str(e))
             if selected == []:
-                save(chat_id,s);return response(prompt(s))
+                save(chat_id,s);return response(_warm_prompt(chat_id,s))
             if selected and (len(selected)>1 or selected[0].get('quantity')):
                 save(chat_id,s);return price_reply(s)
             matches = [l['product'] for l in selected] if selected else []
@@ -365,14 +382,14 @@ def handle_checkout(chat_id, text, previous=None):
             return response(f"El {s['product']['nombre']} cuesta S/ {Decimal(str(s['product']['precio'])):.2f} por unidad.\n"+prompt(s))
         elif stage == 'quantity':
             m = re.fullmatch(r'(\d{1,3})(?:\s*unidad(?:es)?)?(?:\s+por favor)?', _ramy_quantity_text(n))
-            if not m or not 1 <= int(m.group(1)) <= 100: return response('Indica una cantidad entre 1 y 100 unidades. El CRM comprobará el stock antes de registrar.')
+            if not m or not 1 <= int(m.group(1)) <= 100: return response('Claro 😊. Dime cuántas unidades deseas, por ejemplo «una unidad» o «2». Podemos registrar entre 1 y 100; primero confirmaremos la disponibilidad.')
             if len(cart(s))>1:
                 pending=next(l for l in s['items'] if not l.get('quantity'))
                 pending['quantity']=int(m.group(1));s['quantity']=s['items'][0].get('quantity')
                 s['stage']='name' if all(l.get('quantity') for l in s['items']) else 'quantity'
             else:s['quantity'] = int(m.group(1)); s['stage'] = 'name' 
         elif stage == 'name':
-            if not valid_name(text): return response('Escribe tu nombre completo para el pedido.')
+            if not valid_name(text): return response('¿Me compartes tu nombre y apellido, por favor? Así dejamos tu pedido con los datos correctos 😊.')
             s['name'] = text.strip(); s['stage'] = 'city' if s.get('phone') else 'phone'
         elif stage == 'phone':
             value = re.sub(r'[\s+()-]', '', text)
@@ -380,20 +397,20 @@ def handle_checkout(chat_id, text, previous=None):
             if not re.fullmatch(r'519\d{8}', value): return response('Escribe un celular peruano de 9 dígitos, empezando con 9.')
             s['phone'] = value; s['stage'] = 'city'
         elif stage == 'city' and (len(n.split()) == 1 or n in ('lima metropolitana', 'puerto maldonado', 'cerro de pasco')):
-            if not valid_field('city', text.strip()): return response(prompt(s))
+            if not valid_field('city', text.strip()): return response(_warm_prompt(chat_id,s))
             s['city'] = text.strip(); s['stage'] = 'address'
             s['_ramy_await_district'] = True
-            save(chat_id,s); return response(prompt(s))
+            save(chat_id,s); return response(_warm_prompt(chat_id,s))
         elif stage == 'address' and s.get('_ramy_await_district'):
-            if not valid_field('city', text.strip()): return response(prompt(s))
+            if not valid_field('city', text.strip()): return response(_warm_prompt(chat_id,s))
             s['city'] += ' - ' + text.strip()
             s.pop('_ramy_await_district', None)
-            save(chat_id,s); return response(prompt(s))
+            save(chat_id,s); return response(_warm_prompt(chat_id,s))
         elif stage == 'address' and n in ('no se','no conozco','no tengo agencia','ninguna'):
             return response('El equipo puede ayudarte a elegir una agencia Shalom en tu distrito. Primero necesitamos confirmar cuál usarás; todavía no registraré el pedido.')
         elif stage in ('city','address','reference'):
             limit = {'city':120,'address':1000,'reference':500}[stage]
-            if not valid_field(stage, '' if stage == 'reference' and n in ('sin referencia','ninguna','no') else text.strip()): return response(prompt(s))
+            if not valid_field(stage, '' if stage == 'reference' and n in ('sin referencia','ninguna','no') else text.strip()): return response(_warm_prompt(chat_id,s))
             s[stage] = '' if stage == 'reference' and n in ('sin referencia','ninguna','no') else text.strip()
             s['stage'] = {'city':'address','address':'reference','reference':'confirm'}[stage]
         elif stage == 'confirm':
@@ -439,7 +456,7 @@ def handle_checkout(chat_id, text, previous=None):
                 logging.getLogger(__name__).error('RAMY_PEDIDO_REGISTRO error=%s', type(e).__name__)
                 return response('No pude confirmar el registro del pedido. El equipo debe revisar la conexión al CRM; no deposites todavía. Puedes reintentar con «confirmo» o dejar la compra para después.')
         save(chat_id,s)
-        return response(prompt(s))
+        return response(_warm_prompt(chat_id,s))
 
 def expects_receipt(chat_id):
     with lock: return bool(load(chat_id).get('order'))
