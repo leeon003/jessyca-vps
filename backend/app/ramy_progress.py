@@ -22,3 +22,7 @@ def track_progress(fn):
         return result
     tracked.__signature__=inspect.signature(fn,eval_str=True)
     return tracked
+
+STAGES.update({k:('ESPERANDO_DATOS','Agencia Shalom') for k in ('agency_choose','agency_location','agency_confirm','agency_wait')})
+
+STAGES['dni']=('ESPERANDO_DATOS','DNI del destinatario')

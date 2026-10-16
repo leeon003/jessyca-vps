@@ -1,3 +1,4 @@
+from app.ramy_conversation import conversational
 """Flujo de venta controlado; la IA nunca elige IDs de pago ni ejecuta operaciones."""
 import base64
 import hashlib
@@ -33,6 +34,11 @@ def save(chat_id, state):
     ROOT.mkdir(parents=True, exist_ok=True, mode=0o700)
     p = path(chat_id); temp = p.with_suffix('.tmp')
     temp.write_text(json.dumps(state, ensure_ascii=False)); temp.chmod(0o600); temp.replace(p)
+    try:
+        from app.memory_store import remember_checkout
+        remember_checkout(chat_id, state)
+    except Exception:
+        logging.getLogger(__name__).warning('No se pudo actualizar memoria comercial; borrador conservado')
 
 def token():
     for line in TOKEN.read_text().splitlines():
@@ -61,9 +67,31 @@ def _ramy_delivery_question(text):
     return bool(re.search(r'\b(entrega|llega|llegaria|llegara|demora|tarda|plazo)\b|\bcuando\b.*\b(recibo|recibir|recibiria)\b', text)) and not bool(re.search(r'\b(codigo|clave)\b', text))
 
 def _ramy_delivery_reply(s):
-    return response('Trabajamos con Shalom para recojo en agencia 😊. El tiempo estimado debe confirmarse según la agencia de destino; pagar hoy no garantiza entrega mañana. ¿En qué agencia deseas recoger tu pedido?')
+    return response('El envío por Shalom demora aproximadamente *3 días desde el despacho*. Es un plazo estimado, no una fecha garantizada. El envío lo pagas aparte.')
+
+
+# RAMY_PRECIO_CORDIAL_V1
+def _ramy_price_invitation(s):
+    import secrets
+    p = s['product']
+    amount = Decimal(str(p['precio']))
+    name = p['nombre']
+    variants = (
+        'Claro 😊 {name} está a *S/ {amount:.2f} por unidad*.\n¿Cuántas unidades te gustaría pedir?',
+        'Te cuento 😊 El precio de {name} es *S/ {amount:.2f} por unidad*.\n¿Deseas una unidad o necesitas más?',
+        '¡Qué bueno que te interese! 😊 {name} cuesta *S/ {amount:.2f} por unidad*.\n¿Cuántas unidades deseas?',
+        'Claro 😊 Puedes llevar {name} por *S/ {amount:.2f} la unidad*.\n¿Qué cantidad necesitas?',
+        'Te ayudo con tu compra 😊 {name} está a *S/ {amount:.2f} por unidad*.\n¿Cuántas unidades te gustaría llevar?',
+        '{name} cuesta *S/ {amount:.2f} por unidad* 😊.\n¿Quieres una unidad o necesitas más?',
+    )
+    return secrets.choice(variants).format(name=name, amount=amount)
 
 def prompt(s):
+    from app.ramy_recipient import prompt as recipient_prompt
+    if s.get('stage')=='dni':return recipient_prompt()
+    from app.ramy_agency_flow import agency_prompt
+    agency_question=agency_prompt(s)
+    if agency_question is not None:return agency_question
     if s.get("_ramy_await_district"):
         return "¿En qué distrito deseas recoger el pedido?"
     stage = s['stage']
@@ -71,7 +99,7 @@ def prompt(s):
     if stage == 'choice': return '¿Quieres uno de cada producto o dos unidades de uno? Si es de uno, dime cuál.'
     if stage == 'quantity' and len(cart(s))>1:return quantity_prompt(s)
     return {'product':'¿Qué producto o productos deseas comprar? Puedes escribir sus nombres.',
-        'quantity':'Con gusto 😊. ¿Cuántas unidades deseas?', 'name':'¿Cuál es tu nombre completo? Así preparo tu pedido con los datos correctos 😊.',
+        'quantity':'¿Cuántas unidades te gustaría pedir? 😊', 'name':'¿Quién recogerá el pedido? Compárteme su nombre completo, por favor 😊.',
         'phone':'¿Cuál es tu número de WhatsApp? Escríbelo con 9 dígitos o con 51 delante.',
         'city':'Gracias 😊. ¿En qué ciudad y distrito recibirás tu pedido?',
         'address':'¿En qué agencia Shalom deseas recoger tu pedido? Si no sabes cuál, escribe «no sé» para que el equipo te ayude a elegirla.',
@@ -100,13 +128,14 @@ def _warm_prompt(chat_id, s):
     return next_question
 
 def summary(s):
+    from app.ramy_recipient import mask_dni
     lines=cart(s)
     total=sum((Decimal(str(l['product']['precio']))*l['quantity'] for l in lines),Decimal('0'))
     details='\n'.join(f"• {l['quantity']} x {l['product']['nombre']} — S/ {Decimal(str(l['product']['precio'])):.2f} por unidad" for l in lines)
     return (f"Te comparto el resumen para que lo revises con calma 😊:\n{details}\nTotal de productos: S/ {total:.2f}\n"
-        f"Un único adelanto para este pedido: *S/ 10.00* (se descuenta del total).\nNombre: {s['name']}\nWhatsApp: {s['phone']}\n"
-        f"Destino: {s['city']}\nDirección/agencia: {s['address']}\nReferencia: {s['reference'] or 'Sin referencia'}\n"
-        'Enviamos por Shalom para recojo en agencia; el tiempo estimado lo confirma el equipo. ¿Confirmas que registre este pedido? Escribe «confirmo» o «cancelar compra».')
+        f"Un único adelanto para este pedido: *S/ 10.00* (se descuenta del total).\nDestinatario: {s['name']}\nDNI: {mask_dni(s.get('dni_destinatario'))}\nWhatsApp: {s['phone']}\n"
+        + (f"Destino: {s['agency']['departamento']} / {s['agency']['provincia']} / {s['agency']['distrito_reportado']}\nAgencia Shalom: {s['agency']['nombre']} — {s['agency']['direccion']}\n" if s.get('agency') else f"Destino: {s['city']}\nDirección/agencia: {s['address']}\n")
+        + 'Enviamos por Shalom para recojo en agencia; el tiempo estimado lo confirma el equipo. ¿Confirmas que registre este pedido? Escribe «confirmo» o «cancelar compra».')
 
 def quantity_prompt(s):
     pending=next((l for l in cart(s) if not l.get('quantity')),None)
@@ -244,6 +273,21 @@ def choose_cart(s,n,products):
 
 
 def handle_checkout(chat_id, text, previous=None):
+    from app.ramy_sales_flow import dispatch
+    handled,reply=dispatch(__import__('sys').modules[__name__],chat_id,text,previous)
+    if handled:return reply
+    text=re.sub(r"(?i)^\s*previo(?=\s+(?:de|del|por|un|una)\b)","precio",text)
+    # Resolver documentos antes de cualquier llamada generativa; cancelar conserva prioridad.
+    if not re.search(r'\b(cancelar|cancela|no deseo|ya no quiero|yo te aviso)\b',norm(text)):
+        from app.ramy_recipient import handle as recipient_handle
+        with lock:
+            recipient_state=load(chat_id)
+            handled,reply=recipient_handle(chat_id,text,recipient_state,save,valid_name,summary)
+            if handled:return reply
+    if conversational(text):
+        from app.ramy_agency_flow import agency_prompt
+        with lock:current=load(chat_id)
+        if not (agency_prompt(current) and not current.get('order') and re.search(r'\b(agencia|agencias|shalom|destino|ubicacion|cerca)\b',norm(text))):return None
     with lock:
         s = load(chat_id); n = norm(text)
         if n in ('cancelar','cancela','cancelalo') or re.search(r'\b(cancelar compra|cancela(?:r)? (?:el )?pedido|ya no deseo|no deseo|ya no quiero|no quiero comprar|dejalo|yo te aviso|te aviso luego|mas adelante|por ahora no)\b', n):
@@ -279,6 +323,8 @@ def handle_checkout(chat_id, text, previous=None):
             s = {'stage':'product','request':secrets.token_hex(24),'offered_ids':inferred_offers}
             if phone(chat_id): s['phone'] = phone(chat_id)
         if s.get('order'):
+            if re.search(r'\b(cambiar|cambia|modificar|otra agencia|otro destino)\b',n) and re.search(r'\b(agencia|destino|envio)\b',n):
+                return response('El pedido ya está registrado. El equipo debe coordinar el cambio de agencia; no he modificado el destino.')
             if start: return response('Ya tienes un pedido registrado en este chat. Para otro pedido, escribe «nueva compra».')
             if n == 'nueva compra':
                 save(chat_id, {}); return handle_checkout(chat_id, 'quiero comprar')
@@ -321,6 +367,9 @@ def handle_checkout(chat_id, text, previous=None):
                     return payment_message(order)
                 except Exception: return response('No pude consultar el estado del pedido. No deposites otro importe hasta que el equipo lo confirme.')
             return None
+        from app.ramy_agency_flow import handle_agency
+        handled,agency_reply=handle_agency(chat_id,text,s,api,save,summary,is_question)
+        if handled:return agency_reply
         # RAMY_CANTIDAD_PALABRAS_V1
         words = {'un':1,'uno':1,'una':1,'dos':2,'tres':3,'cuatro':4,'cinco':5,'seis':6,'siete':7,'ocho':8,'nueve':9,'diez':10}
         correction_text = re.sub(
@@ -379,7 +428,7 @@ def handle_checkout(chat_id, text, previous=None):
                 s['quantity'] = int(initial.group(1)); s['stage'] = 'name'
                 save(chat_id,s); return price_reply(s)
             save(chat_id,s)
-            return response(f"El {s['product']['nombre']} cuesta S/ {Decimal(str(s['product']['precio'])):.2f} por unidad.\n"+prompt(s))
+            return response(_ramy_price_invitation(s))
         elif stage == 'quantity':
             m = re.fullmatch(r'(\d{1,3})(?:\s*unidad(?:es)?)?(?:\s+por favor)?', _ramy_quantity_text(n))
             if not m or not 1 <= int(m.group(1)) <= 100: return response('Claro 😊. Dime cuántas unidades deseas, por ejemplo «una unidad» o «2». Podemos registrar entre 1 y 100; primero confirmaremos la disponibilidad.')
@@ -390,7 +439,7 @@ def handle_checkout(chat_id, text, previous=None):
             else:s['quantity'] = int(m.group(1)); s['stage'] = 'name' 
         elif stage == 'name':
             if not valid_name(text): return response('¿Me compartes tu nombre y apellido, por favor? Así dejamos tu pedido con los datos correctos 😊.')
-            s['name'] = text.strip(); s['stage'] = 'city' if s.get('phone') else 'phone'
+            s['name'] = text.strip(); s['stage'] = ('city' if s.get('phone') else 'phone') if s.get('dni_destinatario') else 'dni'
         elif stage == 'phone':
             value = re.sub(r'[\s+()-]', '', text)
             if re.fullmatch(r'9\d{8}', value): value = '51'+value
@@ -420,6 +469,7 @@ def handle_checkout(chat_id, text, previous=None):
             if not match: return response('No pude identificar este producto en el CRM. El equipo debe revisarlo.')
             payload = {'solicitud_id':s['request'],'nombre_completo':s['name'],'whatsapp':s['phone'],
                 'provincia':s['city'],'direccion':s['address'],'referencia':s['reference'],
+                'agencia_id':s['agency']['ter_id'],'agencia_version':s['agency']['version'],'dni_destinatario':s['dni_destinatario'],
                 'producto_id':int(match.group(1)),'cantidad':s['quantity'], 'precio_esperado':p['precio'],'confirmado':True}
             endpoint='/pedidos'
             if len(cart(s))>1:
@@ -437,6 +487,11 @@ def handle_checkout(chat_id, text, previous=None):
             except HTTPError as e:
                 logging.getLogger(__name__).error('RAMY_PEDIDO_REGISTRO HTTP=%s', e.code)
                 if e.code == 409:
+                    try:agency_error='agencia' in json.loads(e.read(4096)).get('detail','').casefold()
+                    except Exception:agency_error=False
+                    if agency_error:
+                        s['stage']='city';s.pop('_agency_confirmed',None);s.pop('agency',None);save(chat_id,s)
+                        return response('Necesitamos confirmar nuevamente la agencia con el equipo. No deposites hasta confirmar el pedido. ¿A qué ciudad o provincia sería el envío?')
                     products = catalog() or []
                     if len(cart(s))>1:
                         lookup={x['id']:x for x in products}
@@ -473,7 +528,7 @@ def checkout_context(chat_id):
         # Datos de la venta, sin dirección, nombre, cuentas ni IDs internos para la IA.
         return ('\nProducto seleccionado por el cliente: '+s['product']['nombre']+
             '. Está en una compra en curso. Resuelve la duda y luego retoma la pregunta pendiente: '+
-            (prompt(s) if s.get('stage') in ('quantity','name','phone','city','address','reference') else 'confirmar el resumen del pedido.'))
+            (prompt(s) if s.get('stage') in ('quantity','name','dni','phone','city','address','reference') else 'confirmar el resumen del pedido.'))
 
 def receive_receipt(chat_id, image):
     with lock:

@@ -5,11 +5,24 @@ from decimal import Decimal
 def norm(text):return ''.join(c for c in unicodedata.normalize('NFD',text.casefold()) if unicodedata.category(c)!='Mn')
 
 def try_fast(message,api):
-    text=message.text.strip();n=norm(text)
+    text=message.text.strip();text=re.sub(r"(?i)^previo(?=\s+(?:de|del|por|un|una)\b)","precio",text);n=norm(text)
     if not text:return {'reply':'Escribe tu consulta para ayudarte.','needs_ai':False}
     if len(text)>2000:return {'reply':'¿Puedes enviarme tu consulta en mensajes más cortos?','needs_ai':False}
     with api.memory_lock:previous=list(api.histories.get(message.chat_id,[]))[-8:]
+    from app import ramy_checkout as checkout
+    from app.ramy_sales_flow import dispatch
+    handled,result=dispatch(checkout,message.chat_id,text,previous)
+    if handled:
+        api.save_conversation(message.chat_id,previous,text,result['reply'])
+        return {**result,'needs_ai':False}
     result=api.handle_product_photo(message.chat_id,text,previous)
+    if result is None:
+        from app.ramy_agency_flow import priority_reply
+        result=priority_reply(message.chat_id,text)
+    if result is None:
+        from app import ramy_checkout as checkout
+        from app.ramy_conversation import answer
+        result=answer(message.chat_id,text,previous,api.consultar_productos,checkout)
     if result is None and re.search(r'\b(caracteristicas?|descripcion|detalles|que incluye|para que sirve|como funciona|como se usa|garantia)\b',n):
         from app.ramy_checkout import product_mentions, load, prompt
         products=api.consultar_productos()
@@ -35,7 +48,8 @@ def try_fast(message,api):
                     next_step=prompt(draft) if draft.get('stage') and not draft.get('order') else '¿Qué otro dato del producto necesitas?'
                     result={'reply':f"{p['nombre']} — S/ {Decimal(str(p['precio'])):.2f}\n{info}\n{next_step}"}
     if result is None:result=api.handle_checkout(message.chat_id,text,previous)
-    if result is None:result=api.payment_reply(text)
+    from app.ramy_conversation import conversational
+    if result is None and not conversational(text):result=api.payment_reply(text)
     if result is None and n.strip(' ¡!¿?.,:;😊👋✨\n\t') in ('hola','holi','holis','buenas','buenos dias','buenas tardes','buenas noches'):
         result={'reply':'Soy JESSYCA, asesora de ventas de Tiendas RAMY. ¡Hola! 😊\n¿En qué puedo ayudarte hoy con nuestros productos? 🛍️✨'}
     if result is None and re.search(r'\b(crm|vps|servidor|software)\b',n):

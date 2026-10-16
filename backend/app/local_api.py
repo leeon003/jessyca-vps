@@ -310,14 +310,16 @@ def save_conversation(
     user_text,
     reply,
 ):
+    from app.ramy_recipient import redact
+    user_text=redact(user_text)
     saved_user = {
         "role": "user",
-        "content": user_text[:600],
+        "content": user_text[:2000],
     }
 
     saved_answer = {
         "role": "assistant",
-        "content": reply[:600],
+        "content": reply[:2000],
     }
 
     with memory_lock:
@@ -327,7 +329,7 @@ def save_conversation(
                 saved_user,
                 saved_answer,
             ]
-        )[-8:]
+        )[-20:]
 
         histories.move_to_end(
             chat_id
@@ -467,6 +469,8 @@ def _ramy_model_chat(
     num_predict=180,
     num_ctx=4096,
 ):
+    from app.ramy_recipient import redact_messages
+    messages=redact_messages(messages)
     if model in (TEXT_MODEL, VISION_MODEL):
         return _ramy_openai_text(messages)
 
@@ -571,12 +575,24 @@ def chat(message: Message):
     if photo_reply is not None:
         save_conversation(message.chat_id, photo_previous, text, photo_reply['reply'])
         return photo_reply
+    from app.ramy_agency_flow import priority_reply
+    agency_reply=priority_reply(message.chat_id,text)
+    if agency_reply is not None:
+        save_conversation(message.chat_id,photo_previous,text,agency_reply['reply'])
+        return agency_reply
+    from app import ramy_checkout as checkout
+    from app.ramy_conversation import answer, conversational
+    conversation_reply = answer(message.chat_id, text, photo_previous, consultar_productos, checkout)
+    if conversation_reply is not None:
+        save_conversation(message.chat_id, photo_previous, text, conversation_reply['reply'])
+        return conversation_reply
     sales_reply = handle_checkout(message.chat_id, text, histories.get(message.chat_id, []))
     if sales_reply is not None:
+        save_conversation(message.chat_id, photo_previous, text, sales_reply['reply'])
         return sales_reply
     message.assistant_context = (message.assistant_context + checkout_context(message.chat_id))[-1200:]
 
-    official_payment = payment_reply(text)
+    official_payment = None if conversational(text) else payment_reply(text)
     if official_payment is not None:
         return official_payment
 
@@ -608,6 +624,10 @@ def chat(message: Message):
                 "en mensajes más cortos?"
             )
         }
+
+    from app.memory_store import commercial_context
+    commercial = commercial_context(message.chat_id)
+    message.assistant_context = (message.assistant_context[:850] + commercial[:350])[:1200]
 
     t_profile = time.monotonic()
 
